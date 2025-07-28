@@ -1152,6 +1152,11 @@ Under the hood, checkpointing is powered by checkpointer objects that conform to
 
 :::python
 
+* `langgraph-checkpoint`: The base interface for checkpointer savers ([BaseCheckpointSaver][langgraph.checkpoint.base.BaseCheckpointSaver]) and serialization/deserialization interface ([SerializerProtocol][langgraph.checkpoint.serde.base.SerializerProtocol]). Includes in-memory checkpointer implementation ([InMemorySaver][langgraph.checkpoint.memory.InMemorySaver]) for experimentation. LangGraph comes with `langgraph-checkpoint` included.
+* `langgraph-checkpoint-sqlite`: An implementation of LangGraph checkpointer that uses SQLite database ([SqliteSaver][langgraph.checkpoint.sqlite.SqliteSaver] / [AsyncSqliteSaver][langgraph.checkpoint.sqlite.aio.AsyncSqliteSaver]). Ideal for experimentation and local workflows. Needs to be installed separately.
+* `langgraph-checkpoint-postgres`: An advanced checkpointer that uses Postgres database ([PostgresSaver][langgraph.checkpoint.postgres.PostgresSaver] / [AsyncPostgresSaver][langgraph.checkpoint.postgres.aio.AsyncPostgresSaver]), used in LangGraph Platform. Ideal for using in production. Needs to be installed separately.
+* `langgraph-checkpoint-oracle`: An implementation of LangGraph checkpointer that uses Oracle database ([OracleCheckpointer][langgraph.checkpoint.oracle.OracleCheckpointer] / [AsyncOracleCheckpointer][langgraph.checkpoint.oracle.aio.AsyncOracleCheckpointer]). Ideal for enterprise environments using Oracle Database. Needs to be installed separately.
+
 - `langgraph-checkpoint`: The base interface for checkpointer savers (@[BaseCheckpointSaver]) and serialization/deserialization interface (@[SerializerProtocol][SerializerProtocol]). Includes in-memory checkpointer implementation (@[InMemorySaver][InMemorySaver]) for experimentation. LangGraph comes with `langgraph-checkpoint` included.
 - `langgraph-checkpoint-sqlite`: An implementation of LangGraph checkpointer that uses SQLite database (@[SqliteSaver][SqliteSaver] / @[AsyncSqliteSaver]). Ideal for experimentation and local workflows. Needs to be installed separately.
 - `langgraph-checkpoint-postgres`: An advanced checkpointer that uses Postgres database (@[PostgresSaver][PostgresSaver] / @[AsyncPostgresSaver]), used in LangGraph Platform. Ideal for using in production. Needs to be installed separately.
@@ -1178,9 +1183,8 @@ Each checkpointer conforms to @[BaseCheckpointSaver] interface and implements th
 
 If the checkpointer is used with asynchronous graph execution (i.e. executing the graph via `.ainvoke`, `.astream`, `.abatch`), asynchronous versions of the above methods will be used (`.aput`, `.aput_writes`, `.aget_tuple`, `.alist`).
 
-!!! note
-
-    For running your graph asynchronously, you can use `InMemorySaver`, or async versions of Sqlite/Postgres checkpointers -- `AsyncSqliteSaver` / `AsyncPostgresSaver` checkpointers.
+!!! note Note
+    For running your graph asynchronously, you can use `InMemorySaver`, or async versions of Sqlite/Postgres/Oracle checkpointers -- `AsyncSqliteSaver` / `AsyncPostgresSaver` / `AsyncOracleCheckpointer` checkpointers.
 
 :::
 
@@ -1240,12 +1244,16 @@ checkpointer = PostgresSaver.from_conn_string("postgresql://...", serde=serde)
 checkpointer.setup()
 ```
 
-When running on LangGraph Platform, encryption is automatically enabled whenever `LANGGRAPH_AES_KEY` is present, so you only need to provide the environment variable. Other encryption schemes can be used by implementing @[`CipherProtocol`][CipherProtocol] and supplying it to `EncryptedSerializer`.
-:::
+```python
+from langgraph.checkpoint.serde.encrypted import EncryptedSerializer
+from langgraph.checkpoint.oracle import OracleCheckpointer
 
-:::js
-`@langchain/langgraph-checkpoint` defines protocol for implementing serializers and provides a default implementation that handles a wide variety of types, including LangChain and LangGraph primitives, datetimes, enums and more.
-:::
+serde = EncryptedSerializer.from_pycryptodome_aes()
+checkpointer = OracleCheckpointer.from_conn_string("username/password@localhost:1521/service", serde=serde)
+checkpointer.setup()
+```
+
+When running on LangGraph Platform, encryption is automatically enabled whenever `LANGGRAPH_AES_KEY` is present, so you only need to provide the environment variable. Other encryption schemes can be used by implementing [`CipherProtocol`][langgraph.checkpoint.serde.base.CipherProtocol] and supplying it to `EncryptedSerializer`.
 
 ## Capabilities
 
