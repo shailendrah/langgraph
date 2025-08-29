@@ -7,6 +7,7 @@ from typing import Any, Optional, cast
 import oracledb
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
+    BaseCheckpointSaver,
     WRITES_IDX_MAP,
     ChannelVersions,
     Checkpoint,
@@ -19,12 +20,11 @@ from langgraph.checkpoint.serde.base import SerializerProtocol
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from . import _ainternal
-from .base import BaseOracleCheckpointer
 
 Conn = _ainternal.Conn
 
 
-class AsyncOracleCheckpointer(BaseOracleCheckpointer):
+class AsyncOracleCheckpointer(BaseCheckpointSaver):
     """Asynchronous checkpointer that stores checkpoints in an Oracle database.
 
     This checkpoint saver stores checkpoints in an Oracle database using the
@@ -42,7 +42,10 @@ class AsyncOracleCheckpointer(BaseOracleCheckpointer):
 
     """
 
+    conn: _ainternal.Conn
     lock: asyncio.Lock
+    _table_prefix: str
+    _serde: SerializerProtocol
 
     def __init__(
         self,
@@ -58,10 +61,22 @@ class AsyncOracleCheckpointer(BaseOracleCheckpointer):
             serde: Serializer to use (defaults to JsonPlusSerializer)
             table_prefix: Prefix for the tables (defaults to "")
         """
-        super().__init__(serde=serde or JsonPlusSerializer(), table_prefix=table_prefix)
+        super().__init__(serde=serde or JsonPlusSerializer())
         self.conn = conn
+        self._table_prefix = table_prefix
+        self._serde = serde or JsonPlusSerializer()
         self.lock = asyncio.Lock()
         self.loop = asyncio.get_running_loop()
+
+    @property
+    def _checkpoints_table(self) -> str:
+        """Get the fully qualified checkpoints table name."""
+        return f"{self._table_prefix}CHECKPOINTS"
+
+    @property
+    def _writes_table(self) -> str:
+        """Get the fully qualified writes table name."""
+        return f"{self._table_prefix}WRITES"
 
     @classmethod
     @asynccontextmanager
@@ -142,89 +157,200 @@ class AsyncOracleCheckpointer(BaseOracleCheckpointer):
         async with self.lock:
             async with _ainternal.get_connection(self.conn) as conn:
                 async with conn.cursor() as cursor:
-                    await cursor.execute(self.MIGRATIONS[0])
-                    await cursor.execute(
-                        "SELECT v FROM checkpoint_migrations ORDER BY v DESC FETCH FIRST 1 ROWS ONLY"
-                    )
-                    row = await cursor.fetchone()
-                    if row is None:
-                        version = -1
-                    else:
-                        version = row[0]
+                    try:
+                        # Create checkpoints table if it doesn't exist
+                        await cursor.execute(
+                            f"""
+                            BEGIN
+                              EXECUTE IMMEDIATE '
+                                CREATE TABLE {self._table_prefix}CHECKPOINTS (
+                                  thread_id VARCHAR2(512) NOT NULL,
+                                  thread_ts VARCHAR2(64),
+                                  checkpoint_id VARCHAR2(64) NOT NULL,
+                                  checkpoint CLOB NOT NULL,
+                                  metadata CLOB NOT NULL,
+                                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                                  PRIMARY KEY (thread_id, checkpoint_id)
+                                )';
+                            EXCEPTION
+                              WHEN OTHERS THEN
+                                IF SQLCODE = -955 THEN NULL;
+                                ELSE RAISE;
+                              END IF;
+                            END;
+                          """
+                        )
 
-                    for v, migration in zip(
-                        range(version + 1, len(self.MIGRATIONS)),
-                        self.MIGRATIONS[version + 1:],
-                    ):
-                        await cursor.execute(migration)
-                        await cursor.execute(f"INSERT INTO checkpoint_migrations (v) VALUES ({v})")
+                        # Create writes table if it doesn't exist
+                        await cursor.execute(
+                            f"""
+                            BEGIN
+                              EXECUTE IMMEDIATE '
+                                CREATE TABLE {self._table_prefix}WRITES (
+                                  thread_id VARCHAR2(512) NOT NULL,
+                                  checkpoint_id VARCHAR2(64) NOT NULL,
+                                  node_name VARCHAR2(512) NOT NULL,
+                                  write_idx NUMBER NOT NULL,
+                                  write_data CLOB NOT NULL,
+                                  task_id VARCHAR2(64) NOT NULL,
+                                  task_path VARCHAR2(512) DEFAULT NULL,
+                                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                                  PRIMARY KEY (thread_id, checkpoint_id, node_name, write_idx)
+                                )';
+                            EXCEPTION
+                              WHEN OTHERS THEN
+                                IF SQLCODE = -955 THEN NULL;
+                                ELSE RAISE;
+                              END IF;
+                            END;
+                          """
+                        )
 
+                        # Create an index on the checkpoints table for faster lookups
+                        await cursor.execute(
+                            f"""
+                            BEGIN
+                              EXECUTE IMMEDIATE '
+                                CREATE INDEX {self._table_prefix}CK_THREAD_IDX ON
+                                  {self._table_prefix}CHECKPOINTS (thread_id, created_at)';
+                            EXCEPTION
+                              WHEN OTHERS THEN
+                                IF SQLCODE = -955 THEN NULL;
+                                ELSE RAISE;
+                              END IF;
+                            END;
+                          """
+                        )
+
+                        # Create indexes on the writes table
+                        await cursor.execute(
+                            f"""
+                            BEGIN
+                              EXECUTE IMMEDIATE '
+                                CREATE INDEX {self._table_prefix}WR_THREAD_CK_IDX ON
+                                  {self._table_prefix}WRITES (thread_id, checkpoint_id)';
+                            EXCEPTION
+                              WHEN OTHERS THEN
+                                IF SQLCODE = -955 THEN NULL;
+                                ELSE RAISE;
+                              END IF;
+                            END;
+                          """
+                        )
+                    
+                    except Exception as e:
+                        # Table already exists or other error, continue
+                        pass
+                    
                     await conn.commit()
 
     async def alist(
         self,
-        config: Optional[RunnableConfig],
+        config: Optional[RunnableConfig] = None,
         *,
         filter: Optional[dict[str, Any]] = None,
         before: Optional[RunnableConfig] = None,
         limit: Optional[int] = None,
     ) -> AsyncIterator[CheckpointTuple]:
-        """List checkpoints from the database asynchronously.
-
-        This method retrieves a list of checkpoint tuples from the Oracle database based
-        on the provided config. The checkpoints are ordered by checkpoint ID in descending
-        order (newest first).
+        """List checkpoints for a thread asynchronously.
 
         Args:
-            config: Base configuration for filtering checkpoints.
-            filter: Additional filtering criteria for metadata.
-            before: If provided, only checkpoints before the specified checkpoint ID are returned.
-            limit: Maximum number of checkpoints to return.
+            config: A RunnableConfig containing the thread_id.
+            filter: Optional filter criteria for metadata.
+            before: Optional config to get checkpoints before a specific checkpoint.
+            limit: Optional limit on the number of checkpoints to return.
 
         Yields:
-            AsyncIterator[CheckpointTuple]: An asynchronous iterator of matching checkpoint tuples.
+            AsyncIterator[CheckpointTuple]: An asynchronous iterator of checkpoint tuples.
         """
-        where, args = self._search_where(config, filter, before)
-        query = self.SELECT_SQL + where + " ORDER BY checkpoint_id DESC"
-        if limit:
-            query += f" FETCH FIRST {limit} ROWS ONLY"
+        filter = filter or {}
+        # Type-safe access to configurable
+        thread_id = None
+        if config is not None:
+            configurable = config.get("configurable", {})
+            if configurable:
+                thread_id = configurable["thread_id"]
 
-        async with self._cursor() as cur:
-            await cur.execute(query, args)
-            rows = await cur.fetchall()
-            for value in rows:
-                # In Oracle, column names are uppercase by default
-                value_dict = {
-                    k.lower(): v for k, v in zip(
-                        cur.description, value)}
-                yield CheckpointTuple(
-                    {
-                        "configurable": {
-                            "thread_id": value_dict["thread_id"],
-                            "checkpoint_ns": value_dict["checkpoint_ns"],
-                            "checkpoint_id": value_dict["checkpoint_id"],
-                        }
-                    },
-                    await asyncio.to_thread(
-                        self._load_checkpoint,
-                        value_dict["checkpoint"],
-                        value_dict["channel_values"],
-                        value_dict["pending_sends"],
-                    ),
-                    self._load_metadata(value_dict["metadata"]),
-                    (
-                        {
-                            "configurable": {
-                                "thread_id": value_dict["thread_id"],
-                                "checkpoint_ns": value_dict["checkpoint_ns"],
-                                "checkpoint_id": value_dict["parent_checkpoint_id"],
-                            }
-                        }
-                        if value_dict["parent_checkpoint_id"]
-                        else None
-                    ),
-                    await asyncio.to_thread(self._load_writes, value_dict["pending_writes"]),
-                )
+        async with self.lock:
+            async with _ainternal.get_connection(self.conn) as conn:
+                async with conn.cursor() as cursor:
+                    try:
+                        # Build the query based on the parameters
+                        query_parts = [f"SELECT checkpoint, metadata, checkpoint_id, thread_id FROM {self._checkpoints_table}"]
+                        params = {}
+
+                        where_clauses = []
+                        if thread_id is not None:
+                            where_clauses.append("thread_id = :thread_id")
+                            params["thread_id"] = thread_id
+
+                        # Add before condition if specified
+                        if before is not None:
+                            before_configurable = before.get("configurable", {})
+                            if before_configurable:
+                                before_ts = before_configurable.get("thread_ts")
+                                if before_ts is not None:
+                                    where_clauses.append(
+                                        "created_at < (SELECT created_at FROM {0} WHERE thread_ts = :before_ts)".format(
+                                            self._checkpoints_table))
+                                    params["before_ts"] = before_ts
+
+                        if where_clauses:
+                            query_parts.append("WHERE " + " AND ".join(where_clauses))
+
+                        query_parts.append("ORDER BY created_at DESC")
+
+                        if limit is not None:
+                            query_parts.append(f"FETCH FIRST {limit} ROWS ONLY")
+
+                        query = " ".join(query_parts)
+                        await cursor.execute(query, **params)
+
+                        # Fetch all matching checkpoints
+                        rows = await cursor.fetchall()
+                        for checkpoint_json, metadata_json, checkpoint_id, row_thread_id in rows:
+                            checkpoint = self._serde.loads(checkpoint_json)
+                            metadata = self._serde.loads(metadata_json)
+
+                            # Filter based on metadata if filter is provided
+                            if filter and not all(
+                                metadata.get(k) == v for k, v in filter.items()
+                            ):
+                                continue
+
+                            # Fetch pending writes for this checkpoint
+                            writes_query = f"""
+                                SELECT node_name, write_idx, write_data
+                                FROM {self._writes_table}
+                                WHERE thread_id = :thread_id AND checkpoint_id = :checkpoint_id
+                                ORDER BY node_name, write_idx
+                            """
+                            await cursor.execute(
+                                writes_query,
+                                thread_id=row_thread_id,
+                                checkpoint_id=checkpoint_id)
+
+                            # Convert to the expected format for CheckpointTuple
+                            pending_writes = []
+                            async for node_name, write_idx, write_data in cursor:
+                                write = self._serde.loads(write_data)
+                                pending_writes.append((node_name, write_idx, write))
+
+                            yield CheckpointTuple(
+                                config={
+                                    "configurable": {
+                                        "thread_id": row_thread_id,
+                                        "thread_ts": checkpoint["ts"],
+                                        "checkpoint_id": checkpoint_id,
+                                    }
+                                },
+                                checkpoint=checkpoint,
+                                metadata=metadata,
+                                parent=None,  # Simple implementation doesn't track parent
+                                pending_writes=pending_writes,
+                            )
+                    finally:
+                        pass
 
     async def aget_tuple(
             self,
@@ -302,19 +428,16 @@ class AsyncOracleCheckpointer(BaseOracleCheckpointer):
         metadata: CheckpointMetadata,
         new_versions: ChannelVersions,
     ) -> RunnableConfig:
-        """Save a checkpoint to the database asynchronously.
-
-        This method saves a checkpoint to the Oracle database. The checkpoint is associated
-        with the provided config and its parent config (if any).
+        """Store a checkpoint asynchronously.
 
         Args:
-            config: The config to associate with the checkpoint.
-            checkpoint: The checkpoint to save.
-            metadata: Additional metadata to save with the checkpoint.
-            new_versions: New channel versions as of this write.
+            config: A RunnableConfig containing the thread_id.
+            checkpoint: The checkpoint data to store.
+            metadata: Metadata associated with the checkpoint.
+            new_versions: New channel versions.
 
         Returns:
-            RunnableConfig: Updated configuration after storing the checkpoint.
+            RunnableConfig: Updated config with thread_ts and checkpoint_id.
         """
         # Type-safe access to configurable
         configurable = config.get("configurable", {})
@@ -322,43 +445,52 @@ class AsyncOracleCheckpointer(BaseOracleCheckpointer):
             raise ValueError("Config must contain 'configurable' key")
 
         configurable = configurable.copy()
-        thread_id = configurable.pop("thread_id")
-        checkpoint_ns = configurable.pop("checkpoint_ns")
-        checkpoint_id = configurable.pop(
-            "checkpoint_id", configurable.pop("thread_ts", None)
-        )
+        thread_id = configurable.get("thread_id")
+        if thread_id is None:
+            raise ValueError("thread_id is required")
 
-        copy = checkpoint.copy()
-        next_config: RunnableConfig = {
-            "configurable": {
-                "thread_id": thread_id,
-                "checkpoint_ns": checkpoint_ns,
-                "checkpoint_id": checkpoint["id"],
-            }
-        }
+        # Get or generate checkpoint ID
+        checkpoint_id = configurable.get("checkpoint_id") or get_checkpoint_id(config)
 
-        async with self._cursor(transaction=True) as cur:
-            blob_params = await asyncio.to_thread(
-                self._dump_blobs,
-                thread_id,
-                checkpoint_ns,
-                copy.pop("channel_values"),  # type: ignore[misc]
-                new_versions,
-            )
-            for params in blob_params:
-                await cur.execute(self.UPSERT_CHECKPOINT_BLOBS_SQL, params)
+        async with self.lock:
+            async with _ainternal.get_connection(self.conn) as conn:
+                async with conn.cursor() as cursor:
+                    try:
+                        # Serialize checkpoint and metadata
+                        checkpoint_json = self._serde.dumps(checkpoint)
+                        metadata_json = self._serde.dumps(metadata)
 
-            checkpoint_params = (
-                thread_id,
-                checkpoint_ns,
-                checkpoint["id"],
-                checkpoint_id,
-                self._dump_checkpoint(copy),
-                self._dump_metadata(get_checkpoint_metadata(config, metadata)),
-            )
-            await cur.execute(self.UPSERT_CHECKPOINTS_SQL, checkpoint_params)
+                        # Insert or update the checkpoint
+                        query = f"""
+                                MERGE INTO {self._checkpoints_table} t
+                                USING (SELECT :thread_id AS thread_id, :checkpoint_id AS checkpoint_id FROM dual) s
+                                ON (t.thread_id = s.thread_id AND t.checkpoint_id = s.checkpoint_id)
+                                WHEN MATCHED THEN
+                                    UPDATE SET
+                                        thread_ts = :thread_ts,
+                                        checkpoint = :checkpoint,
+                                        metadata = :metadata,
+                                        created_at = CURRENT_TIMESTAMP
+                                WHEN NOT MATCHED THEN
+                                    INSERT (thread_id, thread_ts, checkpoint_id, checkpoint, metadata)
+                                    VALUES (:thread_id, :thread_ts, :checkpoint_id, :checkpoint, :metadata)
+                                """
+                        await cursor.execute(
+                            query,
+                            thread_id=thread_id,
+                            thread_ts=checkpoint["ts"],
+                            checkpoint_id=checkpoint_id,
+                            checkpoint=checkpoint_json,
+                            metadata=metadata_json,
+                        )
+                        await conn.commit()
+                    finally:
+                        pass
 
-        return next_config
+        # Return updated config
+        configurable["thread_ts"] = checkpoint["ts"]
+        configurable["checkpoint_id"] = checkpoint_id
+        return {"configurable": configurable}
 
     async def aput_writes(
         self,
@@ -367,38 +499,83 @@ class AsyncOracleCheckpointer(BaseOracleCheckpointer):
         task_id: str,
         task_path: str = "",
     ) -> None:
-        """Store intermediate writes linked to a checkpoint asynchronously.
-
-        This method saves intermediate writes associated with a checkpoint to the database.
+        """Store writes for a checkpoint asynchronously.
 
         Args:
-            config: Configuration of the related checkpoint.
-            writes: List of writes to store, each as (channel, value) pair.
-            task_id: Identifier for the task creating the writes.
-            task_path: Path of the task creating the writes.
+            config: A RunnableConfig containing the thread_id, thread_ts, and checkpoint_id.
+            writes: A sequence of tuples (node_name, data) to store.
+            task_id: Task ID associated with the writes.
+            task_path: Optional task path.
         """
         # Type-safe access to configurable
         configurable = config.get("configurable", {})
         if not configurable:
             raise ValueError("Config must contain 'configurable' key")
 
-        query = (
-            self.UPSERT_CHECKPOINT_WRITES_SQL
-            if all(w[0] in WRITES_IDX_MAP for w in writes)
-            else self.INSERT_CHECKPOINT_WRITES_SQL
-        )
-        params = await asyncio.to_thread(
-            self._dump_writes,
-            configurable["thread_id"],
-            configurable["checkpoint_ns"],
-            configurable["checkpoint_id"],
-            task_id,
-            task_path,
-            writes,
-        )
-        async with self._cursor(transaction=True) as cur:
-            for param in params:
-                await cur.execute(query, param)
+        thread_id = configurable["thread_id"]
+        checkpoint_id = configurable["checkpoint_id"]
+
+        if not writes:
+            return
+
+        async with self.lock:
+            async with _ainternal.get_connection(self.conn) as conn:
+                async with conn.cursor() as cursor:
+                    try:
+                        # Group writes by node
+                        writes_by_node: dict[str, list] = {}
+                        for node_name, data in writes:
+                            if node_name not in writes_by_node:
+                                writes_by_node[node_name] = []
+                            writes_by_node[node_name].append(data)
+
+                        # Insert writes to database
+                        for node_name, data_list in writes_by_node.items():
+                            # Get the current write index for this node/checkpoint
+                            query = f"""
+                                SELECT NVL(MAX(write_idx) + 1, 0)
+                                FROM {self._writes_table}
+                                WHERE thread_id = :thread_id
+                                  AND checkpoint_id = :checkpoint_id
+                                  AND node_name = :node_name
+                            """
+                            await cursor.execute(
+                                query,
+                                thread_id=thread_id,
+                                checkpoint_id=checkpoint_id,
+                                node_name=node_name,
+                            )
+                            row = await cursor.fetchone()
+                            write_idx = row[0] if row else 0
+
+                            # Insert each write
+                            for i, data in enumerate(data_list):
+                                # Serialize the write data
+                                write_data = self._serde.dumps(data)
+
+                                query = f"""
+                                    INSERT INTO {self._writes_table} (
+                                        thread_id, checkpoint_id, node_name, write_idx,
+                                        write_data, task_id, task_path
+                                    )                                     VALUES (
+                                        :thread_id, :checkpoint_id, :node_name, :write_idx,
+                                        :write_data, :task_id, :task_path
+                                    )
+                                """
+                                await cursor.execute(
+                                    query,
+                                    thread_id=thread_id,
+                                    checkpoint_id=checkpoint_id,
+                                    node_name=node_name,
+                                    write_idx=write_idx + i,
+                                    write_data=write_data,
+                                    task_id=task_id,
+                                    task_path=task_path,
+                                )
+
+                        await conn.commit()
+                    finally:
+                        pass
 
     async def adelete_thread(self, thread_id: str) -> None:
         """Delete all checkpoints and writes associated with a thread ID.
@@ -406,19 +583,25 @@ class AsyncOracleCheckpointer(BaseOracleCheckpointer):
         Args:
             thread_id: The thread ID to delete.
         """
-        async with self._cursor(transaction=True) as cur:
-            await cur.execute(
-                "DELETE FROM checkpoints WHERE thread_id = :1",
-                (str(thread_id),),
-            )
-            await cur.execute(
-                "DELETE FROM checkpoint_blobs WHERE thread_id = :1",
-                (str(thread_id),),
-            )
-            await cur.execute(
-                "DELETE FROM checkpoint_writes WHERE thread_id = :1",
-                (str(thread_id),),
-            )
+        async with self.lock:
+            async with _ainternal.get_connection(self.conn) as conn:
+                async with conn.cursor() as cursor:
+                    try:
+                        # Delete writes first (due to foreign key constraints)
+                        await cursor.execute(
+                            f"DELETE FROM {self._writes_table} WHERE thread_id = :thread_id",
+                            thread_id=str(thread_id),
+                        )
+                        
+                        # Delete checkpoints
+                        await cursor.execute(
+                            f"DELETE FROM {self._checkpoints_table} WHERE thread_id = :thread_id",
+                            thread_id=str(thread_id),
+                        )
+                        
+                        await conn.commit()
+                    finally:
+                        pass
 
     @asynccontextmanager
     async def _cursor(

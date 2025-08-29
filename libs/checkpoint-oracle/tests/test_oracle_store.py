@@ -11,37 +11,14 @@ from langgraph.store.oracle.aio import AsyncOracleStore
 from langgraph.store.oracle.base import OracleIndexConfig, OracleStore, PoolConfig
 
 
-class FakeCursor:
-    def execute(self, *args, **kwargs):
-        return None
-    def fetchall(self):
-        return []
-    def fetchone(self):
-        return [0]
-    @property
-    def rowcount(self):
-        return 5
-    def close(self):
-        return None
 
-class FakeConnection:
-    def __init__(self, cursor=None):
-        self._cursor = cursor or FakeCursor()
-    def cursor(self):
-        return self._cursor
-    def commit(self):
-        return None
-    def close(self):
-        return None
 
 class TestOracleStore:
     """Test suite for Oracle store implementation."""
 
     @pytest.fixture(autouse=True)
-    def setup(self, monkeypatch) -> None:
+    def setup(self) -> None:
         """Set up test fixtures."""
-        import oracledb
-        monkeypatch.setattr(oracledb, "Connection", FakeConnection)
         self.test_namespace = ("test", "namespace")
         self.test_key = "test_key"
         self.test_value = {"data": "test_value", "number": 42}
@@ -55,31 +32,33 @@ class TestOracleStore:
         assert OracleStore is not None
         assert OracleIndexConfig is not None
 
-    @patch('oracledb.connect')
-    def test_sync_store_creation(self, mock_connect) -> None:
-        mock_connect.return_value = FakeConnection()
+    def test_sync_store_creation(self) -> None:
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        with OracleStore.from_conn_string("test_connection") as store:
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             assert isinstance(store, OracleStore)
             assert isinstance(store, BaseStore)
 
-    @patch('oracledb.connect_async')
-    async def test_async_store_creation(self, mock_connect_async) -> None:
+    async def test_async_store_creation(self) -> None:
         """Test asynchronous store creation."""
-        mock_conn = AsyncMock()
-        mock_connect_async.return_value = mock_conn
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        async with AsyncOracleStore.from_conn_string("test_connection") as store:
+        async with AsyncOracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             assert isinstance(store, AsyncOracleStore)
             assert isinstance(store, BaseStore)
 
-    @patch('oracledb.create_pool')
-    @patch('oracledb.connect')
-    def test_sync_store_with_pool_config(self, mock_connect, mock_create_pool) -> None:
+    def test_sync_store_with_pool_config(self) -> None:
         """Test synchronous store creation with pool configuration."""
-        mock_connect.return_value = FakeConnection()
-        mock_pool = Mock()
-        mock_create_pool.return_value = mock_pool
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
         pool_config: PoolConfig = {
             "min_size": 2,
@@ -87,13 +66,15 @@ class TestOracleStore:
             "kwargs": {}  # Remove autocommit as it's not supported by oracledb.create_pool()
         }
         
-        with OracleStore.from_conn_string("test_connection", pool_config=pool_config) as store:
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}", pool_config=pool_config) as store:
             assert isinstance(store, OracleStore)
 
-    @patch('oracledb.connect')
-    def test_sync_store_with_index_config(self, mock_connect) -> None:
+    def test_sync_store_with_index_config(self) -> None:
         """Test synchronous store creation with index configuration."""
-        mock_connect.return_value = FakeConnection()
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
         def dummy_embed(texts):
             return [[0.0] * 1536 for _ in texts]
@@ -105,83 +86,82 @@ class TestOracleStore:
             "embed": dummy_embed,
         }
         
-        with OracleStore.from_conn_string("test_connection", index=index_config) as store:
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}", index=index_config) as store:
             assert isinstance(store, OracleStore)
             assert store.index_config is not None
 
-    @patch('oracledb.connect')
-    def test_sync_store_with_ttl_config(self, mock_connect) -> None:
+    def test_sync_store_with_ttl_config(self) -> None:
         """Test synchronous store creation with TTL configuration."""
-        mock_connect.return_value = FakeConnection()
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
         ttl_config: TTLConfig = {
             "default_ttl": 60,
             "sweep_interval_minutes": 5
         }
         
-        with OracleStore.from_conn_string("test_connection", ttl=ttl_config) as store:
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}", ttl=ttl_config) as store:
             assert isinstance(store, OracleStore)
             assert store.ttl_config is not None
 
-    @patch('oracledb.connect')
-    def test_sync_setup(self, mock_connect) -> None:
+    def test_sync_setup(self) -> None:
         """Test synchronous store setup."""
-        mock_cursor = Mock()
-        mock_cursor.execute.return_value = None
-        mock_cursor.fetchone.return_value = [0]  # Simulate version row
-        mock_connect.return_value = FakeConnection(cursor=mock_cursor)
-        with OracleStore.from_conn_string("test_connection") as store:
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
+        
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             store.setup()
-            mock_cursor.execute.assert_called()
+            # Test that setup completes without error
+            assert store is not None
 
-    @patch('oracledb.connect_async')
-    async def test_async_setup(self, mock_connect_async) -> None:
+    async def test_async_setup(self) -> None:
         """Test asynchronous store setup."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        # Mock cursor fetchone to return None (no existing migrations)
-        mock_cursor.fetchone.return_value = None
-        
-        async with AsyncOracleStore.from_conn_string("test_connection") as store:
+        async with AsyncOracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             await store.setup()
-            # Verify cursor was used
-            mock_cursor.execute.assert_called()
+            # Test that setup completes without error
+            assert store is not None
 
-    @patch('oracledb.connect')
-    def test_sync_put_and_get(self, mock_connect) -> None:
+    def test_sync_put_and_get(self) -> None:
         """Test synchronous put and get operations."""
-        mock_cursor = Mock()
-        mock_cursor.execute.return_value = None
-        # setup (version row), put (not used), get (returns a row with serialized value)
-        serialized_value = json.dumps(self.test_value)
-        mock_cursor.fetchone.side_effect = [[0], None, [self.test_key, serialized_value, None, None]]
-        mock_cursor.fetchall.return_value = []
-        mock_connect.return_value = FakeConnection(cursor=mock_cursor)
-        with OracleStore.from_conn_string("test_connection") as store:
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
+        
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             store.setup()
+            
+            # Test put operation
             key = store.put(self.test_namespace, self.test_value, self.test_key)
             assert key == self.test_key
+            
+            # Test get operation
             item = store.get(self.test_namespace, self.test_key)
             assert item is not None
             assert item.key == self.test_key
             assert item.value == self.test_value
             assert item.namespace == self.test_namespace
+            
+            # Clean up
+            store.delete(self.test_namespace, self.test_key)
 
-    @patch('oracledb.connect_async')
-    async def test_async_put_and_get(self, mock_connect_async) -> None:
+    async def test_async_put_and_get(self) -> None:
         """Test asynchronous put and get operations."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        # Mock cursor fetchone to return None (no existing item)
-        mock_cursor.fetchone.return_value = None
-        
-        async with AsyncOracleStore.from_conn_string("test_connection") as store:
+        async with AsyncOracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             await store.setup()
             
             # Test put operation - note the parameter order: namespace, key, value
@@ -194,17 +174,18 @@ class TestOracleStore:
             assert item.key == self.test_key
             assert item.value == self.test_value
             assert item.namespace == self.test_namespace
+            
+            # Clean up
+            await store.adelete(self.test_namespace, self.test_key)
 
-    @patch('oracledb.connect')
-    def test_sync_batch_operations(self, mock_connect) -> None:
+    def test_sync_batch_operations(self) -> None:
         """Test synchronous batch operations."""
-        mock_connect.return_value = FakeConnection()
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        # Mock cursor fetchall to return empty list
-        mock_cursor = Mock()
-        mock_cursor.fetchall.return_value = []
-        
-        with OracleStore.from_conn_string("test_connection") as store:
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             store.setup()
             
             # Test batch operations
@@ -220,18 +201,14 @@ class TestOracleStore:
             assert results[0] is None  # Put operation returns None
             assert results[1] is None  # Get operation returns None (no item found)
 
-    @patch('oracledb.connect_async')
-    async def test_async_batch_operations(self, mock_connect_async) -> None:
+    async def test_async_batch_operations(self) -> None:
         """Test asynchronous batch operations."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        # Mock cursor fetchall to return empty list
-        mock_cursor.fetchall.return_value = []
-        
-        async with AsyncOracleStore.from_conn_string("test_connection") as store:
+        async with AsyncOracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             await store.setup()
             
             # Test batch operations
@@ -247,128 +224,116 @@ class TestOracleStore:
             assert results[0] is None  # Put operation returns None
             assert results[1] is None  # Get operation returns None (no item found)
 
-    @patch('oracledb.connect')
-    def test_sync_search(self, mock_connect) -> None:
+    def test_sync_search(self) -> None:
         """Test synchronous search operation."""
-        mock_connect.return_value = FakeConnection()
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        # Mock cursor fetchall to return empty list
-        mock_cursor = Mock()
-        mock_cursor.fetchall.return_value = []
-        
-        with OracleStore.from_conn_string("test_connection") as store:
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             store.setup()
             
             # Test search operation
             results = store.search(self.test_namespace, query="test")
             assert isinstance(results, list)
 
-    @patch('oracledb.connect_async')
-    async def test_async_search(self, mock_connect_async) -> None:
+    async def test_async_search(self) -> None:
         """Test asynchronous search operation."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        # Mock cursor fetchall to return empty list
-        mock_cursor.fetchall.return_value = []
-        
-        async with AsyncOracleStore.from_conn_string("test_connection") as store:
+        async with AsyncOracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             await store.setup()
             
             # Test search operation
             results = await store.asearch(self.test_namespace, query="test")
             assert isinstance(results, list)
 
-    @patch('oracledb.connect')
-    def test_sync_list_namespaces(self, mock_connect) -> None:
+    def test_sync_list_namespaces(self) -> None:
         """Test synchronous list_namespaces operation."""
-        mock_connect.return_value = FakeConnection()
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        # Mock cursor fetchall to return empty list
-        mock_cursor = Mock()
-        mock_cursor.fetchall.return_value = []
-        
-        with OracleStore.from_conn_string("test_connection") as store:
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             store.setup()
             
             # Test list_namespaces operation
             namespaces = store.list_namespaces()
             assert isinstance(namespaces, list)
 
-    @patch('oracledb.connect_async')
-    async def test_async_list_namespaces(self, mock_connect_async) -> None:
+    async def test_async_list_namespaces(self) -> None:
         """Test asynchronous list_namespaces operation."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        # Mock cursor fetchall to return empty list
-        mock_cursor.fetchall.return_value = []
-        
-        async with AsyncOracleStore.from_conn_string("test_connection") as store:
+        async with AsyncOracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             await store.setup()
             
             # Test list_namespaces operation
             namespaces = await store.alist_namespaces()
             assert isinstance(namespaces, list)
 
-    @patch('oracledb.connect')
-    def test_sync_delete(self, mock_connect) -> None:
+    def test_sync_delete(self) -> None:
         """Test synchronous delete operation."""
-        mock_cursor = Mock()
-        mock_cursor.execute.return_value = None
-        mock_cursor.fetchone.return_value = [0]
-        mock_connect.return_value = FakeConnection(cursor=mock_cursor)
-        with OracleStore.from_conn_string("test_connection") as store:
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
+        
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             store.setup()
             store.delete(self.test_namespace, self.test_key)
-            mock_cursor.execute.assert_called()
+            # Test that delete completes without error
+            assert store is not None
 
-    @patch('oracledb.connect_async')
-    async def test_async_delete(self, mock_connect_async) -> None:
+    async def test_async_delete(self) -> None:
         """Test asynchronous delete operation."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
         
-        async with AsyncOracleStore.from_conn_string("test_connection") as store:
+        async with AsyncOracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             await store.setup()
             
             # Test delete operation
             await store.adelete(self.test_namespace, self.test_key)
             
-            # Verify cursor was used
-            mock_cursor.execute.assert_called()
+            # Test that delete completes without error
+            assert store is not None
 
-    @patch('oracledb.connect')
-    def test_sync_delete_namespace(self, mock_connect) -> None:
+    def test_sync_delete_namespace(self) -> None:
         """Test synchronous delete_namespace operation."""
-        mock_cursor = Mock()
-        mock_cursor.execute.return_value = None
-        mock_cursor.fetchone.return_value = [0]
-        mock_connect.return_value = FakeConnection(cursor=mock_cursor)
-        with OracleStore.from_conn_string("test_connection") as store:
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
+        
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             store.setup()
             store.delete_namespace(self.test_namespace)
-            mock_cursor.execute.assert_called()
+            # Test that delete_namespace completes without error
+            assert store is not None
 
-    @patch('oracledb.connect')
-    def test_sync_sweep_ttl(self, mock_connect) -> None:
+    def test_sync_sweep_ttl(self) -> None:
         """Test synchronous sweep_ttl operation."""
-        mock_cursor = Mock()
-        mock_cursor.execute.return_value = None
-        mock_cursor.fetchone.return_value = [0]
-        # Simulate rowcount being used for deleted_count
-        type(mock_cursor).rowcount = property(lambda self: 5)
-        mock_connect.return_value = FakeConnection(cursor=mock_cursor)
-        with OracleStore.from_conn_string("test_connection") as store:
+        # Use real connection details
+        username = "skmishra"
+        password = "skmishra"
+        dsn = "shaunaq/FREEPDB1"
+        
+        with OracleStore.from_conn_string(f"{username}/{password}@{dsn}") as store:
             store.setup()
             deleted_count = store.sweep_ttl()
-            assert deleted_count == 5
+            # Test that sweep_ttl completes without error
+            assert isinstance(deleted_count, int)
 
     def test_ttl_sweeper(self) -> None:
         """Test TTL sweeper functionality."""

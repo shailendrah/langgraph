@@ -30,6 +30,7 @@ mypy = "^1.10.0"
 # --strict-config       any warnings encountered while parsing the `pytest`
 #                       section of the configuration file raise errors.
 addopts = "--strict-markers --strict-config --durations=5 -vv"
+asyncio_mode = "auto"
 
 
 [build-system]

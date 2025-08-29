@@ -245,7 +245,7 @@ const graph = builder.compile({ checkpointer });
     :::
 
 :::python
-??? example "Example: using [Oracle](https://pypi.org/project/langgraph-checkpoint-oracle/) checkpointer"
+??? example "Example: using [Oracle](https://pypi.org/project/langgraph-checkpoint-oracle/) checkpointer (including shallow)"
 
     ```
     pip install -U oracledb langgraph langgraph-checkpoint-oracle
@@ -317,6 +317,106 @@ const graph = builder.compile({ checkpointer });
         DB_URI = "username/password@localhost:1521/service"
         # highlight-next-line
         async with AsyncOracleCheckpointer.from_conn_string(DB_URI) as checkpointer:
+            # await checkpointer.setup()
+        
+            async def call_model(state: MessagesState):
+                response = await model.ainvoke(state["messages"])
+                return {"messages": response}
+        
+            builder = StateGraph(MessagesState)
+            builder.add_node(call_model)
+            builder.add_edge(START, "call_model")
+            
+            # highlight-next-line
+            graph = builder.compile(checkpointer=checkpointer)
+        
+            config = {
+                "configurable": {
+                    # highlight-next-line
+                    "thread_id": "1"
+                }
+            }
+        
+            async for chunk in graph.astream(
+                {"messages": [{"role": "user", "content": "hi! I'm bob"}]},
+                # highlight-next-line
+                config,
+                stream_mode="values"
+            ):
+                chunk["messages"][-1].pretty_print()
+            
+            async for chunk in graph.astream(
+                {"messages": [{"role": "user", "content": "what's my name?"}]},
+                # highlight-next-line
+                config,
+                stream_mode="values"
+            ):
+                chunk["messages"][-1].pretty_print()
+        ```
+
+    === "Shallow Checkpointing (Latest Only)"
+
+        ```python
+        from langchain.chat_models import init_chat_model
+        from langgraph.graph import StateGraph, MessagesState, START
+        # highlight-next-line
+        from langgraph.checkpoint.oracle import ShallowOracleCheckpointer
+        
+        model = init_chat_model(model="anthropic:claude-3-5-haiku-latest")
+        
+        DB_URI = "username/password@localhost:1521/service"
+        # highlight-next-line
+        with ShallowOracleCheckpointer.from_conn_string(DB_URI) as checkpointer:
+            # checkpointer.setup()
+        
+            def call_model(state: MessagesState):
+                response = model.invoke(state["messages"])
+                return {"messages": response}
+        
+            builder = StateGraph(MessagesState)
+            builder.add_node(call_model)
+            builder.add_edge(START, "call_model")
+            
+            # highlight-next-line
+            graph = builder.compile(checkpointer=checkpointer)
+        
+            config = {
+                "configurable": {
+                    # highlight-next-line
+                    "thread_id": "1"
+                }
+            }
+        
+            for chunk in graph.stream(
+                {"messages": [{"role": "user", "content": "hi! I'm bob"}]},
+                # highlight-next-line
+                config,
+                stream_mode="values"
+            ):
+                chunk["messages"][-1].pretty_print()
+            
+            for chunk in graph.stream(
+                {"messages": [{"role": "user", "content": "what's my name?"}]},
+                # highlight-next-line
+                config,
+                stream_mode="values"
+            ):
+                chunk["messages"][-1].pretty_print()
+        ```
+
+    === "Async Shallow Checkpointing (Latest Only)"
+
+        ```python
+        from langchain.chat_models import init_chat_model
+        from langgraph.graph import StateGraph, MessagesState, START
+        # highlight-next-line
+        from langgraph.checkpoint.oracle import AsyncShallowOracleCheckpointer
+        
+        model = init_chat_model(model="anthropic:claude-3-5-haiku-latest")
+        
+        DB_URI = "username/password@localhost:1521/service"
+        # highlight-next-line
+        async with AsyncShallowOracleCheckpointer.from_conn_string(DB_URI) as checkpointer:
             # await checkpointer.setup()
         
             async def call_model(state: MessagesState):

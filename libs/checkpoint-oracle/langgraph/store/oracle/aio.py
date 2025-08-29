@@ -46,11 +46,30 @@ def _serialize_value(value: Any) -> str:
     return json.dumps(value)
 
 
-def _deserialize_value(value: str, deserializer: Optional[Any] = None) -> Any:
-    """Deserialize a value from JSON string."""
+async def _deserialize_value_async(value: Any, deserializer: Optional[Any] = None) -> Any:
+    """Deserialize a value from JSON string (async version)."""
     import json
     if deserializer:
         return deserializer(value)
+    
+    # Handle Oracle LOB objects
+    if hasattr(value, 'read'):
+        # This is a LOB object, read its content
+        value = await value.read()
+    
+    return json.loads(value)
+
+def _deserialize_value(value: str, deserializer: Optional[Any] = None) -> Any:
+    """Deserialize a value from JSON string (sync version)."""
+    import json
+    if deserializer:
+        return deserializer(value)
+    
+    # Handle Oracle LOB objects
+    if hasattr(value, 'read'):
+        # This is a LOB object, read its content
+        value = value.read()
+    
     return json.loads(value)
 
 
@@ -479,6 +498,21 @@ class AsyncOracleStore(BaseStore):
 
         return results
 
+    def batch(self, ops: Sequence[Op]) -> list[Result]:
+        """Execute a batch of operations synchronously.
+
+        Args:
+            ops: List of operations to execute
+
+        Returns:
+            List of results in the same order as operations
+        """
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self.abatch(ops))
+        finally:
+            loop.close()
+
     async def _batch_get_ops(
         self,
         get_ops: Sequence[tuple[int, GetOp]],
@@ -513,70 +547,50 @@ class AsyncOracleStore(BaseStore):
 
             # Get items from database
             if any(this_refresh_ttls):
-                # Update TTL for items that need refreshing
+                # First update TTLs where needed
                 placeholders = ", ".join([":key" + str(i)
                                          for i in range(len(keys))])
-                query = f"""
-                BEGIN
-                    -- First update TTLs where needed
-                    UPDATE store s
-                    SET expires_at = SYSTIMESTAMP + (s.ttl_minutes * INTERVAL '1' MINUTE)
-                    WHERE s.prefix = :prefix
-                    AND s.key IN ({placeholders})
-                    AND EXISTS (
-                        SELECT 1 FROM TABLE(CAST(:refresh_array AS SYS.ODCIVARCHAR2LIST))
-                        WHERE COLUMN_VALUE = 'TRUE'
-                    )
-                    AND s.ttl_minutes IS NOT NULL;
-
-                    -- Then fetch all requested items
-                    OPEN :cursor FOR
-                    SELECT s.key, s.value, s.created_at, s.updated_at
-                    FROM store s
-                    WHERE s.prefix = :prefix
-                    AND s.key IN ({placeholders});
-                END;
+                update_query = f"""
+                UPDATE store s
+                SET expires_at = SYSTIMESTAMP + (s.ttl_minutes * INTERVAL '1' MINUTE)
+                WHERE s.ttl_minutes IS NOT NULL
+                AND s.prefix = :prefix
+                AND s.key IN ({placeholders})
                 """
 
-                # Prepare refresh flags
-                refresh_flags = [str(flag).upper()
-                                 for flag in this_refresh_ttls]
-
-                # Execute
-                params = {
-                    "prefix": ns_text,
-                    "refresh_array": refresh_flags,
-                    "cursor": cur
+                # Execute TTL refresh
+                update_params = {
+                    "prefix": ns_text
                 }
 
                 # Add key parameters
                 for i, key in enumerate(keys):
-                    params[f"key{i}"] = key
+                    update_params[f"key{i}"] = key
 
-                await cur.execute(query, params)
-            else:
-                # Simple query without TTL refresh
-                placeholders = ", ".join(
-                    [f":key{i}" for i in range(len(keys))])
-                query = f"""
-                SELECT s.key, s.value, s.created_at, s.updated_at
-                FROM store s
-                WHERE s.prefix = :prefix
-                AND s.key IN ({placeholders})
-                """
+                await cur.execute(update_query, update_params)
+            
+            # Always execute a SELECT query to get the data
+            placeholders = ", ".join(
+                [f":key{i}" for i in range(len(keys))])
+            query = f"""
+            SELECT s.key, s.value, s.created_at, s.updated_at
+            FROM store s
+            WHERE s.prefix = :prefix
+            AND s.key IN ({placeholders})
+            """
 
-                params = {"prefix": ns_text}
-                for i, key in enumerate(keys):
-                    params[f"key{i}"] = key
+            params = {"prefix": ns_text}
+            for i, key in enumerate(keys):
+                params[f"key{i}"] = key
 
-                await cur.execute(query, params)
+            await cur.execute(query, params)
 
             # Process results
             rows = await cur.fetchall()
             for row in rows:
                 key = row[0]
                 idx = idx_map[key]
-                value = _deserialize_value(row[1], self._deserializer)
+                value = await _deserialize_value_async(row[1], self._deserializer)
                 results[idx] = Item(
                     key=key,
                     value=value,
@@ -799,7 +813,7 @@ class AsyncOracleStore(BaseStore):
             # Handle namespace prefix
             if op.namespace_prefix:
                 ns_prefix = ".".join(op.namespace_prefix)
-                ns_condition = "store.prefix LIKE :ns_prefix || '%'"
+                ns_condition = "s.prefix LIKE :ns_prefix || '%'"
                 filter_params["ns_prefix"] = ns_prefix
             else:
                 ns_condition = "1=1"  # Always true
@@ -853,30 +867,22 @@ class AsyncOracleStore(BaseStore):
                     "limit": op.limit
                 }
 
+                # Execute the search query first
+                await cur.execute(query, params)
+                
+                # Then refresh TTL if needed
                 if op.refresh_ttl:
-                    # Wrap in a block to refresh TTL
-                    wrapped_query = f"""
-                    DECLARE
-                        v_rows SYS_REFCURSOR;
-                    BEGIN
-                        -- First refresh TTL for matched items
-                        UPDATE store s
-                        SET expires_at = SYSTIMESTAMP + (s.ttl_minutes * INTERVAL '1' MINUTE)
-                        WHERE s.ttl_minutes IS NOT NULL
-                        AND EXISTS (
-                            SELECT 1 FROM ({query}) sr
-                            WHERE sr.prefix = s.prefix AND sr.key = s.key
-                        );
-
-                        -- Then return the results
-                        OPEN v_rows FOR {query};
-                        :cursor := v_rows;
-                    END;
+                    # First refresh TTL for matched items
+                    refresh_query = f"""
+                    UPDATE store
+                    SET expires_at = SYSTIMESTAMP + (ttl_minutes * INTERVAL '1' MINUTE)
+                    WHERE ttl_minutes IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM ({query}) sr
+                        WHERE sr.prefix = store.prefix AND sr.key = store.key
+                    )
                     """
-                    params["cursor"] = cur
-                    await cur.execute(wrapped_query, params)
-                else:
-                    await cur.execute(query, params)
+                    await cur.execute(refresh_query, params)
             else:
                 # Regular search without vector similarity
                 query = f"""
@@ -903,29 +909,20 @@ class AsyncOracleStore(BaseStore):
                 }
 
                 if op.refresh_ttl:
-                    # Wrap in a block to refresh TTL
-                    wrapped_query = f"""
-                    DECLARE
-                        v_rows SYS_REFCURSOR;
-                    BEGIN
-                        -- First refresh TTL for matched items
-                        UPDATE store s
-                        SET expires_at = SYSTIMESTAMP + (s.ttl_minutes * INTERVAL '1' MINUTE)
-                        WHERE s.ttl_minutes IS NOT NULL
-                        AND EXISTS (
-                            SELECT 1 FROM ({query}) sr
-                            WHERE sr.prefix = s.prefix AND sr.key = s.key
-                        );
-
-                        -- Then return the results
-                        OPEN v_rows FOR {query};
-                        :cursor := v_rows;
-                    END;
+                    # First refresh TTL for matched items
+                    refresh_query = f"""
+                    UPDATE store
+                    SET expires_at = SYSTIMESTAMP + (ttl_minutes * INTERVAL '1' MINUTE)
+                    WHERE ttl_minutes IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM ({query}) sr
+                        WHERE sr.prefix = store.prefix AND sr.key = store.key
+                    )
                     """
-                    params["cursor"] = cur
-                    await cur.execute(wrapped_query, params)
-                else:
-                    await cur.execute(query, params)
+                    await cur.execute(refresh_query, params)
+                
+                # Execute the search query
+                await cur.execute(query, params)
 
             # Process results
             rows = await cur.fetchall()
@@ -934,7 +931,7 @@ class AsyncOracleStore(BaseStore):
             for row in rows:
                 prefix, key, value, created_at, updated_at, score = row
                 namespace = tuple(prefix.split("."))
-                value_dict = _deserialize_value(value, self._deserializer)
+                value_dict = await _deserialize_value_async(value, self._deserializer)
 
                 search_results.append(
                     SearchItem(

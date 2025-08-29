@@ -60,7 +60,6 @@ MIGRATIONS = [
 
     """
   CREATE INDEX idx_store_expires_at ON store (expires_at)
-  WHERE expires_at IS NOT NULL
   """,
 ]
 
@@ -133,6 +132,12 @@ def _deserialize_value(
     """
     if deserializer:
         return deserializer(value)
+    
+    # Handle Oracle LOB objects
+    if hasattr(value, 'read'):
+        # This is a LOB object, read its content
+        value = value.read()
+    
     return json.loads(value)
 
 
@@ -473,18 +478,27 @@ class OracleStore(BaseStore):
 
                 # First update TTLs where needed
                 if any(this_refresh_ttls):
-                    refresh_update = f"""
-                        UPDATE store s
-                        SET expires_at = SYSTIMESTAMP + (s.ttl_minutes * INTERVAL '1' MINUTE)
-                        WHERE s.prefix = :prefix
-                        AND s.key IN ({placeholders})
-                        AND s.ttl_minutes IS NOT NULL
-                    """
-                    params = {"prefix": ns_text}
-
-                    # Add key parameters
-                    for i, key in enumerate(keys):
-                        params[f"key{i}"] = key
+                    if len(keys) == 1:
+                        refresh_update = f"""
+                            UPDATE store s
+                            SET expires_at = SYSTIMESTAMP + (s.ttl_minutes * INTERVAL '1' MINUTE)
+                            WHERE s.prefix = :prefix
+                            AND s.key = :key1
+                            AND s.ttl_minutes IS NOT NULL
+                        """
+                        params = {"prefix": ns_text, "key1": keys[0]}
+                    else:
+                        key_conditions = " OR ".join([f"s.key = :key{i+1}" for i in range(len(keys))])
+                        refresh_update = f"""
+                            UPDATE store s
+                            SET expires_at = SYSTIMESTAMP + (s.ttl_minutes * INTERVAL '1' MINUTE)
+                            WHERE s.prefix = :prefix
+                            AND ({key_conditions})
+                            AND s.ttl_minutes IS NOT NULL
+                        """
+                        params = {"prefix": ns_text}
+                        for i, key in enumerate(keys):
+                            params[f"key{i+1}"] = key
 
                     # Apply TTL refresh
                     refresh_items = []
@@ -494,38 +508,60 @@ class OracleStore(BaseStore):
 
                     if refresh_items:
                         # Only execute if there are items to refresh
-                        refresh_placeholders = ", ".join(
-                            [f":rkey{i}" for i in range(len(refresh_items))])
-                        refresh_update += f" AND s.key IN ({refresh_placeholders})"
-
-                        for i, key in enumerate(refresh_items):
-                            params[f"rkey{i}"] = key
+                        if len(refresh_items) == 1:
+                            refresh_update += " AND s.key = :rkey1"
+                            params["rkey1"] = refresh_items[0]
+                        else:
+                            refresh_conditions = " OR ".join([f"s.key = :rkey{i+1}" for i in range(len(refresh_items))])
+                            refresh_update += f" AND ({refresh_conditions})"
+                            for i, key in enumerate(refresh_items):
+                                params[f"rkey{i+1}"] = key
 
                         cur.execute(refresh_update, params)
 
                 # Then fetch all requested items
-                query = f"""
-                SELECT s.key, s.value, s.created_at, s.updated_at
-                FROM store s
-                WHERE s.prefix = :prefix
-                AND s.key IN ({placeholders})
-                """
+                if len(keys) == 1:
+                    query = """
+                    SELECT s.key, s.value, s.created_at, s.updated_at
+                    FROM store s
+                    WHERE s.prefix = :prefix
+                    AND s.key = :key1
+                    """
+                    params = {"prefix": ns_text, "key1": keys[0]}
+                else:
+                    key_conditions = " OR ".join([f"s.key = :key{i+1}" for i in range(len(keys))])
+                    query = f"""
+                    SELECT s.key, s.value, s.created_at, s.updated_at
+                    FROM store s
+                    WHERE s.prefix = :prefix
+                    AND ({key_conditions})
+                    """
+                    params = {"prefix": ns_text}
+                    for i, key in enumerate(keys):
+                        params[f"key{i+1}"] = key
 
                 cur.execute(query, params)
             else:
                 # Simple query without TTL refresh
-                placeholders = ", ".join(
-                    [f":key{i}" for i in range(len(keys))])
-                query = f"""
-                SELECT s.key, s.value, s.created_at, s.updated_at
-                FROM store s
-                WHERE s.prefix = :prefix
-                AND s.key IN ({placeholders})
-                """
-
-                params = {"prefix": ns_text}
-                for i, key in enumerate(keys):
-                    params[f"key{i}"] = key
+                if len(keys) == 1:
+                    query = """
+                    SELECT s.key, s.value, s.created_at, s.updated_at
+                    FROM store s
+                    WHERE s.prefix = :prefix
+                    AND s.key = :key1
+                    """
+                    params = {"prefix": ns_text, "key1": keys[0]}
+                else:
+                    key_conditions = " OR ".join([f"s.key = :key{i+1}" for i in range(len(keys))])
+                    query = f"""
+                    SELECT s.key, s.value, s.created_at, s.updated_at
+                    FROM store s
+                    WHERE s.prefix = :prefix
+                    AND ({key_conditions})
+                    """
+                    params = {"prefix": ns_text}
+                    for i, key in enumerate(keys):
+                        params[f"key{i+1}"] = key
 
                 cur.execute(query, params)
 
@@ -578,18 +614,23 @@ class OracleStore(BaseStore):
 
             for namespace, keys in namespace_groups.items():
                 ns_text = ".".join(namespace)
-                placeholders = ", ".join(
-                    [f":key{i}" for i in range(len(keys))])
-
-                query = f"""
-                DELETE FROM store
-                WHERE prefix = :prefix
-                AND key IN ({placeholders})
-                """
-
-                params = {"prefix": ns_text}
-                for i, key in enumerate(keys):
-                    params[f"key{i}"] = key
+                if len(keys) == 1:
+                    query = """
+                    DELETE FROM store
+                    WHERE prefix = :prefix
+                    AND key = :key1
+                    """
+                    params = {"prefix": ns_text, "key1": keys[0]}
+                else:
+                    key_conditions = " OR ".join([f"key = :key{i+1}" for i in range(len(keys))])
+                    query = f"""
+                    DELETE FROM store
+                    WHERE prefix = :prefix
+                    AND ({key_conditions})
+                    """
+                    params = {"prefix": ns_text}
+                    for i, key in enumerate(keys):
+                        params[f"key{i+1}"] = key
 
                 cur.execute(query, params)
 
@@ -753,7 +794,7 @@ class OracleStore(BaseStore):
             # Handle namespace prefix
             if op.namespace_prefix:
                 ns_prefix = ".".join(op.namespace_prefix)
-                ns_condition = "store.prefix LIKE :ns_prefix || '%'"
+                ns_condition = "s.prefix LIKE :ns_prefix || '%'"
                 filter_params["ns_prefix"] = ns_prefix
             else:
                 ns_condition = "1=1"  # Always true

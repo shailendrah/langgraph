@@ -659,9 +659,13 @@ class OracleCheckpointer(BaseCheckpointSaver):
 
 # Import async checkpointer
 from .aio import AsyncOracleCheckpointer
+# Import shallow checkpointers
+from .shallow import ShallowOracleCheckpointer, AsyncShallowOracleCheckpointer
 
 __all__ = [
     "OracleCheckpointer",
     "AsyncOracleCheckpointer",
+    "ShallowOracleCheckpointer",
+    "AsyncShallowOracleCheckpointer",
     "Conn",
 ]

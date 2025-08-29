@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Comprehensive tests for Oracle checkpointer implementation."""
 
-from unittest.mock import AsyncMock, Mock, patch
-
 import pytest
 from langchain_core.runnables import RunnableConfig
 
@@ -65,6 +63,11 @@ class TestOracleCheckpointer:
         }
         self.metadata_3: CheckpointMetadata = {}
 
+        # Real connection details
+        self.username = "skmishra"
+        self.password = "skmishra"
+        self.dsn = "shaunaq/FREEPDB1"
+
     def test_imports(self) -> None:
         """Test that all imports work correctly."""
         assert AsyncOracleCheckpointer is not None
@@ -76,90 +79,51 @@ class TestOracleCheckpointer:
         serde = JsonPlusSerializer()
         assert serde is not None
 
-    @patch('oracledb.connect')
-    def test_sync_checkpointer_creation(self, mock_connect) -> None:
+    def test_sync_checkpointer_creation(self) -> None:
         """Test synchronous checkpointer creation."""
-        mock_conn = Mock()
-        mock_connect.return_value = mock_conn
-        
-        with OracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        with OracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             assert isinstance(checkpointer, OracleCheckpointer)
             assert checkpointer.serde is not None
 
-    @patch('oracledb.connect_async')
-    async def test_async_checkpointer_creation(self, mock_connect_async) -> None:
+    async def test_async_checkpointer_creation(self) -> None:
         """Test asynchronous checkpointer creation."""
-        mock_conn = AsyncMock()
-        mock_connect_async.return_value = mock_conn
-        
-        async with AsyncOracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        async with AsyncOracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             assert isinstance(checkpointer, AsyncOracleCheckpointer)
             assert checkpointer.serde is not None
 
-    @patch('oracledb.connect')
-    def test_sync_checkpointer_from_parameters(self, mock_connect) -> None:
+    def test_sync_checkpointer_from_parameters(self) -> None:
         """Test synchronous checkpointer creation from parameters."""
-        mock_conn = Mock()
-        mock_connect.return_value = mock_conn
-        
         with OracleCheckpointer.from_parameters(
-            user="test_user",
-            password="test_password", 
-            dsn="test_dsn"
+            user=self.username,
+            password=self.password, 
+            dsn=self.dsn
         ) as checkpointer:
             assert isinstance(checkpointer, OracleCheckpointer)
 
-    @patch('oracledb.connect_async')
-    async def test_async_checkpointer_from_parameters(self, mock_connect_async) -> None:
+    async def test_async_checkpointer_from_parameters(self) -> None:
         """Test asynchronous checkpointer creation from parameters."""
-        mock_conn = AsyncMock()
-        mock_connect_async.return_value = mock_conn
-        
         async with AsyncOracleCheckpointer.from_parameters(
-            user="test_user",
-            password="test_password",
-            dsn="test_dsn"
+            user=self.username,
+            password=self.password,
+            dsn=self.dsn
         ) as checkpointer:
             assert isinstance(checkpointer, AsyncOracleCheckpointer)
 
-    @patch('oracledb.connect')
-    def test_sync_setup(self, mock_connect) -> None:
+    def test_sync_setup(self) -> None:
         """Test synchronous checkpointer setup."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect.return_value = mock_conn
-        
-        with OracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        with OracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             checkpointer.setup()
-            # Verify cursor was used
-            mock_cursor.execute.assert_called()
+            assert checkpointer is not None
 
-    @patch('oracledb.connect_async')
-    async def test_async_setup(self, mock_connect_async) -> None:
+    async def test_async_setup(self) -> None:
         """Test asynchronous checkpointer setup."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
-        
-        async with AsyncOracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        async with AsyncOracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             await checkpointer.setup()
-            # Verify cursor was used
-            mock_cursor.execute.assert_called()
+            assert checkpointer is not None
 
-    @patch('oracledb.connect')
-    def test_sync_put_and_get(self, mock_connect) -> None:
+    def test_sync_put_and_get(self) -> None:
         """Test synchronous put and get operations."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect.return_value = mock_conn
-        
-        # Mock cursor fetchone to return None (no existing checkpoint)
-        mock_cursor.fetchone.return_value = None
-        
-        with OracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        with OracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             checkpointer.setup()
             
             # Test put operation
@@ -173,18 +137,9 @@ class TestOracleCheckpointer:
             assert "checkpoint_id" in configurable
             assert configurable["thread_id"] == "thread-1"
 
-    @patch('oracledb.connect_async')
-    async def test_async_put_and_get(self, mock_connect_async) -> None:
+    async def test_async_put_and_get(self) -> None:
         """Test asynchronous put and get operations."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
-        
-        # Mock cursor fetchone to return None (no existing checkpoint)
-        mock_cursor.fetchone.return_value = None
-        
-        async with AsyncOracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        async with AsyncOracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             await checkpointer.setup()
             
             # Test put operation
@@ -198,112 +153,56 @@ class TestOracleCheckpointer:
             assert "checkpoint_id" in configurable
             assert configurable["thread_id"] == "thread-1"
 
-    @patch('oracledb.connect')
-    def test_sync_put_writes(self, mock_connect) -> None:
+    def test_sync_put_writes(self) -> None:
         """Test synchronous put_writes operation."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect.return_value = mock_conn
-        
-        # Mock cursor fetchone to return 0 for write index
-        mock_cursor.fetchone.return_value = [0]
-        
-        with OracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        with OracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             checkpointer.setup()
             
             # Test put_writes operation - use config_2 which has checkpoint_id
             writes = [("node1", "data1"), ("node2", "data2")]
             checkpointer.put_writes(self.config_2, writes, "task1", "path1")
-            
-            # Verify cursor was used
-            mock_cursor.execute.assert_called()
+            assert checkpointer is not None
 
-    @patch('oracledb.connect_async')
-    async def test_async_put_writes(self, mock_connect_async) -> None:
+    async def test_async_put_writes(self) -> None:
         """Test asynchronous put_writes operation."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
-        
-        # Mock cursor fetchone to return 0 for write index
-        mock_cursor.fetchone.return_value = [0]
-        
-        async with AsyncOracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        async with AsyncOracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             await checkpointer.setup()
             
             # Test put_writes operation - use config_2 which has checkpoint_id
             writes = [("node1", "data1"), ("node2", "data2")]
             await checkpointer.aput_writes(self.config_2, writes, "task1", "path1")
-            
-            # Verify cursor was used
-            mock_cursor.execute.assert_called()
+            assert checkpointer is not None
 
-    @patch('oracledb.connect')
-    def test_sync_delete_thread(self, mock_connect) -> None:
+    def test_sync_delete_thread(self) -> None:
         """Test synchronous delete_thread operation."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect.return_value = mock_conn
-        
-        with OracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        with OracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             checkpointer.setup()
             
             # Test delete_thread operation
             checkpointer.delete_thread("thread-1")
-            
-            # Verify cursor was used
-            mock_cursor.execute.assert_called()
+            assert checkpointer is not None
 
-    @patch('oracledb.connect_async')
-    async def test_async_delete_thread(self, mock_connect_async) -> None:
+    async def test_async_delete_thread(self) -> None:
         """Test asynchronous delete_thread operation."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
-        
-        async with AsyncOracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        async with AsyncOracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             await checkpointer.setup()
             
             # Test delete_thread operation
             await checkpointer.adelete_thread("thread-1")
-            
-            # Verify cursor was used
-            mock_cursor.execute.assert_called()
+            assert checkpointer is not None
 
-    @patch('oracledb.connect')
-    def test_sync_list_checkpoints(self, mock_connect) -> None:
+    def test_sync_list_checkpoints(self) -> None:
         """Test synchronous list operation."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect.return_value = mock_conn
-        
-        # Mock cursor fetchall to return empty list
-        mock_cursor.fetchall.return_value = []
-        
-        with OracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        with OracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             checkpointer.setup()
             
             # Test list operation
             checkpoints = list(checkpointer.list(self.config_1))
             assert isinstance(checkpoints, list)
 
-    @patch('oracledb.connect_async')
-    async def test_async_list_checkpoints(self, mock_connect_async) -> None:
+    async def test_async_list_checkpoints(self) -> None:
         """Test asynchronous list operation."""
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_connect_async.return_value = mock_conn
-        
-        # Mock cursor fetchall to return empty list
-        mock_cursor.fetchall.return_value = []
-        
-        async with AsyncOracleCheckpointer.from_conn_string("test_connection") as checkpointer:
+        async with AsyncOracleCheckpointer.from_conn_string(f"{self.username}/{self.password}@{self.dsn}") as checkpointer:
             await checkpointer.setup()
             
             # Test list operation

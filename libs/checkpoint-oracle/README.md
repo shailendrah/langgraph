@@ -123,6 +123,28 @@ async with AsyncOracleCheckpointer.from_conn_string(DB_URI) as checkpointer:
     [c async for c in checkpointer.alist(read_config)]
 ```
 
+## Shallow Checkpointing
+
+For lightweight checkpointing that only stores the most recent checkpoint (without history), you can use the shallow checkpointers:
+
+```python
+from langgraph.checkpoint.oracle import ShallowOracleCheckpointer, AsyncShallowOracleCheckpointer
+
+# Synchronous shallow checkpointer
+with ShallowOracleCheckpointer.from_conn_string(DB_URI) as checkpointer:
+    checkpointer.setup()
+    # Use the checkpointer (only stores latest checkpoint, no history)
+
+# Asynchronous shallow checkpointer
+async with AsyncShallowOracleCheckpointer.from_conn_string(DB_URI) as checkpointer:
+    await checkpointer.setup()
+    # Use the checkpointer (only stores latest checkpoint, no history)
+```
+
+> [!NOTE]
+> Shallow checkpointers are deprecated as of version 2.0.20 and will be removed in 3.0.0. 
+> Use the regular checkpointers instead, and invoke the graph with `graph.invoke(..., checkpoint_during=False)`.
+
 ## Store API
 
 This package also provides Oracle-backed store implementations:
